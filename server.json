@@ -1,0 +1,113 @@
+const express = require("express");
+const app = express();
+const TelegramBot = require("node-telegram-bot-api");
+const { MongoClient } = require("mongodb");
+
+var database, collection;
+
+// URL koneksi MongoDB
+const uri =
+  "mongodb+srv://" +
+  process.env.USER +
+  ":" +
+  process.env.PASS +
+  "@" +
+  process.env.HOST +
+  "/" +
+  process.env.DBNAME;
+
+// Middleware untuk mengurai body request
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Inisialisasi bot Telegram
+const bot = new TelegramBot(process.env.TOKEN, { polling: true });
+
+// Port server
+const port = process.env.PORT || 3000;
+
+// Route untuk endpoint root
+app.get("/", function(req, res) {
+  res.json({ message: "Hello World" });
+  console.log('someone waking me up')
+});
+
+// Route untuk mengakses email berdasarkan ID
+app.get("/mail/:id", function(req, res) {
+  // Logika untuk mengambil email dari database MongoDB
+  collection.findOne({ id: req.params.id }, (error, result) => {
+    if (error) {
+      return res.status(500).send(error);
+    }
+    let isiEmail = result["content"];
+    var buff = Buffer.from(isiEmail, "base64");
+    let text = buff.toString("ascii");
+    res.send(text);
+  });
+});
+
+// Route untuk endpoint webhook
+app.get("/webhook", function(req, res) {
+  res.send("Webhook endpoint is working!");
+});
+
+// Route untuk menerima webhook dari Mailgun
+app.post("/webhook", function(req, res) {
+  console.log(req.body);
+  const sender = req.body.sender;
+  const subject = req.body.subject;
+  const content = req.body["stripped-html"]; // Menggunakan stripped-html untuk konten email
+  const buff = Buffer.from(content, "utf-8");
+  const base64data = buff.toString("base64");
+  let postData = {
+    id: req.body.token,
+    timestamp: req.body.timestamp,
+    content: base64data,
+    email: req.body.recipient
+  };
+  
+  // Insert data email ke dalam database MongoDB
+  collection.insertOne(postData, (error, result) => {
+    if (error) {
+      console.error('Error inserting document:', error);
+      return res.status(500).send(error);
+    }
+    console.log('Email document inserted successfully:', result);
+  });
+  
+  // Mengirim pesan ke bot Telegram
+  bot.sendMessage(
+    process.env.TELEID,
+    "📧 : " + req.body.recipient + 
+    "\n📰 : " + subject +
+    "\n🔗 : https://" +
+      process.env.PROJECTNAME +
+      "/mail/" +
+      req.body.token +
+      "",
+    { parse_mode: "markdown" }
+  );
+
+  res.status(200).json({ message: "Success" });
+});
+
+// Fungsi untuk menghubungkan ke database MongoDB dan mendapatkan kumpulan dokumen
+async function connectToDatabase() {
+  try {
+    const client = new MongoClient(uri, { useNewUrlParser: true, useUnifiedTopology: true });
+    await client.connect();
+    database = client.db();
+    collection = database.collection("emails"); // Menggunakan koleksi "emails" dalam database
+    console.log("Connected to MongoDB successfully");
+  } catch (error) {
+    console.error("Error connecting to MongoDB:", error);
+  }
+}
+
+// Memanggil fungsi untuk terhubung ke database MongoDB
+connectToDatabase().then(() => {
+  // Menjalankan server pada port yang ditentukan
+  app.listen(port, () => {
+    console.log(`Server is running on port ${port}`);
+  });
+});
